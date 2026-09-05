@@ -5,7 +5,6 @@
 
 我为 DeepTutor 官方的 MarginNote 4 桥实现了一个独立开源的 MN4 客户端
 插件：https://github.com/Constallan/deeptutor-mn4-sync
-（仓库公开后链接生效）。
 
 ## 现状
 
