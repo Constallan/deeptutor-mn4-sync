@@ -1,6 +1,10 @@
 <!-- 建议标题（发起时使用）：
 [Bug] 官方所指 MN4 add-on v0.1.0 为 MN3 契约且无法解析；附 MN4 原生实现参考 -->
 
+<!-- 已落地记录：
+- issue 已发起：https://github.com/HKUDS/DeepTutor/issues/1242
+- 收编 PR 已发起：https://github.com/HKUDS/DeepTutor/pull/1243 -->
+
 ## 背景
 
 我为 DeepTutor 官方的 MarginNote 4 桥实现了一个独立开源的 MN4 客户端
