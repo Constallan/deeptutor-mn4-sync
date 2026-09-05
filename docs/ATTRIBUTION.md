@@ -13,6 +13,10 @@
 
 - **evan188199-tech/mn4-deeptutor-sync**（MIT License, © 2026 Feliks）
   - 仅分析其思路与取舍（MN4 同步方向、字段映射），未沿用任何代码。
+  - 核查记录（本地留档 v0.1.0 包）：main.js 使用 MN3 契约
+    （JSB.require 装载 + JSB.newAddon(__dirname)）；addon.js 存在
+    语法错误（第 155 行多余 `}`）；请求路径硬编码 /api/v1/ 前缀。
+    判定为 MN3 时代插件，本仓库实现与其无代码继承关系。
 - **AddonLib**（MIT License, © 2026 Feliks）
   - 仅分析其工程化结构，未沿用任何代码。
 
