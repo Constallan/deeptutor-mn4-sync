@@ -40,6 +40,7 @@ MN4 官方契约入口（`JSB.newAddon` 工厂），`NSUserDefaults` 持久化�
 
 ## License 与致谢
 
+- 作者：Constallan（https://github.com/Constallan/）
 - 许可：MIT，见 `LICENSE`。
 - 代码来源与致谢声明：见 `docs/ATTRIBUTION.md`。
 - 仓库：https://github.com/Constallan/deeptutor-mn4-sync

@@ -15,6 +15,7 @@
 # constallan（忽略大小写匹配）仅允许：
 #   - mnaddon.json 的 "author" 字段值
 #   - 文档中 GitHub 链接字面量 github.com/Constallan/ 内的 Constallan
+#   - LICENSE 的版权行 "Copyright (c) 2026 Ziheng Chen (Constallan)"
 #
 # 大小写说明：constallan 与 token 两个模式按忽略大小写匹配；
 # 其余模式（路径 / 内网地址 / 凭据前缀 / 长 ASCII 串）区分大小写。
@@ -100,7 +101,7 @@ for f in $files; do
     fi
   fi
 
-  # 5) constallan（忽略大小写）：仅两处允许位置
+  # 5) constallan（忽略大小写）：仅三处允许位置
   while IFS= read -r line; do
     text="${line#*:}"
     allowed=0
@@ -111,6 +112,11 @@ for f in $files; do
     fi
     if [ "${f##*.}" = "md" ] && \
        echo "$text" | grep -qF 'github.com/Constallan/'; then
+      allowed=1
+    fi
+    if [ "$f" = "./LICENSE" ] && \
+       echo "$text" | grep -qF 'Copyright (c) 2026' && \
+       echo "$text" | grep -qiE "$RE_CONSTALLAN"; then
       allowed=1
     fi
     if [ "$allowed" -ne 1 ]; then
