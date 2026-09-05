@@ -1,0 +1,16 @@
+# 依赖目录
+node_modules/
+
+# 本地数据库与测试产物
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# 编辑器 / 系统杂项
+.DS_Store
+
+# 临时文件
+*.tmp
+
+# 注意：dist/*.mnaddon 是正式发布产物，刻意不忽略（随仓库发布）
