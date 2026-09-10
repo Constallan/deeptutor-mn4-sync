@@ -7,14 +7,14 @@ DeepTutor 官方 MarginNote 4 桥的独立开源客户端插件：把 MarginNote
 ## 功能
 
 - 配置向导：Server URL / Knowledge Base Name / Device ID 与一次性配对凭据
-- 60 秒自动增量同步（NSTimer 驱动，单一全局循环，防重入）
+- 自动分片全量扫描并推送（完成后每 15 分钟一次，防重入）；每 60 秒轻量心跳
 - 心跳上报与连接测试
 - 工具栏菜单：Configure / Sync Now / Disable / Reset
 - 场景断开自动停止，重连自动恢复
 
 ## 安装与配对
 
-1. 获取 `dist/deeptutor-mn4-sync-1.1.2.mnaddon`，在 MarginNote 4 中打开
+1. 获取 `dist/deeptutor-mn4-sync-1.1.3.mnaddon`，在 MarginNote 4 中打开
    （或拖入）完成安装。
 2. 本插件未签名（`mnaddon.json` 的 `cert_key` 为空），首次使用需在
    MarginNote 4 设置中开启「允许加载未经认证的插件」。
@@ -22,7 +22,12 @@ DeepTutor 官方 MarginNote 4 桥的独立开源客户端插件：把 MarginNote
    Devices 页点 Pair，得到一次性配对凭据（device_id:凭据 格式）。
 4. 点击工具栏的 DeepTutor Sync 图标 → Configure / 配置，依次填入：
    服务器地址、库名（须与 DeepTutor 中完全一致）、凭据（完整粘贴）。
-   保存后自动测试连接，成功后立即开始首次同步并进入 60 秒循环。
+   保存后自动测试连接，成功后开始首次分片同步，此后完成后每 15 分钟自动扫描。
+   需要及时更新时可使用 Sync Now / 立即同步。
+
+1.1.3 安装包包含主线程卡死修复；旧 1.1.2 发布包不包含该修复。
+1.1.3 已在原问题 MarginNote 环境实测，未再出现此前的长时间卡顿；
+诊断、自动化回归及后续复测建议见 `docs/FREEZE-FIX-PLAN.md`。
 
 ## 兼容性（如实声明）
 
@@ -50,5 +55,6 @@ MN4 官方契约入口（`JSB.newAddon` 工厂），`NSUserDefaults` 持久化�
 ```bash
 node --check main.js          # 语法检查
 node tests/syntax-check.js    # 同上（new Function 解析，PASS/FAIL）
+node tests/sync-check.js      # 桥接 getter、分片上传及生命周期回归
 tests/sensitive-scan.sh       # 敏感信息扫描（全仓文本文件）
 ```

@@ -15,7 +15,11 @@ try {
 
 var SETTINGS_KEY = "deeptutor_sync_settings_v1"
 var SYNC_INTERVAL_SEC = 60
+var FULL_SYNC_INTERVAL_SEC = 15 * 60
 var BATCH_SIZE = 500
+var SLICE_BUDGET_MS = 8
+var SLICE_MAX_STEPS = 25
+var YIELD_SEC = 0.01
 
 var COLOR_NAMES = [
   "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink",
@@ -231,40 +235,37 @@ function isoDate(d) {
 
 function noteToObject(note, topic, docTitleByMd5) {
   var flags = topic.flags
+  var flashcard = note.flashcard
+  var docMd5 = note.docMd5
+  var excerpt = note.excerptText
   var type = "note"
-  if (note.flashcard && note.flashcard > 0) type = "card"
+  if (flashcard && flashcard > 0) type = "card"
   else if (flags === 2) type = "mindmap_node"
 
-  var links = []
-  try {
-    if (note.linkedNotes) {
-      for (var i = 0; i < note.linkedNotes.length; i++) {
-        var l = note.linkedNotes[i]
-        if (l && l.noteid) links.push(String(l.noteid))
-      }
-    }
-  } catch (e) {}
-
   var docTitle = null
-  try { if (note.docMd5 && docTitleByMd5[note.docMd5]) docTitle = docTitleByMd5[note.docMd5] } catch (e) {}
+  try { if (docMd5 && docTitleByMd5[docMd5]) docTitle = docTitleByMd5[docMd5] } catch (e) {}
 
   var content = ""
-  try { content = note.notesText || note.excerptText || "" } catch (e) {}
+  try { content = note.notesText || excerpt || "" } catch (e) {}
 
   var color = null
-  try { if (note.colorIndex !== undefined && note.colorIndex !== null && note.colorIndex < COLOR_NAMES.length) color = COLOR_NAMES[note.colorIndex] } catch (e) {}
+  try {
+    var colorIndex = note.colorIndex
+    if (colorIndex !== undefined && colorIndex !== null && colorIndex < COLOR_NAMES.length) color = COLOR_NAMES[colorIndex]
+  } catch (e) {}
+  var startPage = note.startPage
 
   return {
     object_id: String(note.noteId),
     object_type: type,
     title: (note.noteTitle || ""),
     content: content || "",
-    excerpt: (note.excerptText || null),
-    document_id: (note.docMd5 || null),
+    excerpt: (excerpt || null),
+    document_id: (docMd5 || null),
     document_title: docTitle,
-    page: (note.startPage !== undefined && note.startPage !== null ? Number(note.startPage) : null),
+    page: (startPage !== undefined && startPage !== null ? Number(startPage) : null),
     tags: [],
-    links: links,
+    links: [],
     color: color,
     created_at: isoDate(note.createDate),
     updated_at: isoDate(note.modifiedDate),
@@ -291,55 +292,105 @@ function documentToObject(doc) {
   }
 }
 
-function collectAllObjects() {
-  var objs = []
-  var db = Database.sharedInstance()
-  var topics = db.allNotebooks() || []
-  for (var i = 0; i < topics.length; i++) {
-    var topic = topics[i]
-    try {
-      var docTitleByMd5 = {}
-      if (topic.documents) {
-        for (var d = 0; d < topic.documents.length; d++) {
-          var doc = topic.documents[d]
-          if (doc && doc.docMd5) docTitleByMd5[doc.docMd5] = doc.docTitle
+// Each step is bounded to one topic transition or object conversion. Native
+// getters themselves cannot be preempted; their real cost needs Mac sampling.
+function objectCollector() {
+  var topics = null, topic = null, documents = null, notes = null
+  var docValues = [], titles = null, flags = 0
+  var pendingNote = null, linkedNotes = null, li = 0, linkCount = 0
+  var ti = 0, di = 0, ni = 0, topicCount = 0, docCount = 0, noteCount = 0
+  var phase = "database"
+  return {
+    done: false,
+    next: function () {
+      if (phase === "database") {
+        topics = Database.sharedInstance().allNotebooks() || []
+        topicCount = topics.length
+        phase = "topic"
+      } else if (phase === "topic") {
+        if (ti >= topicCount) { this.done = true; topics = null; return null }
+        topic = topics[ti++]
+        flags = topic.flags
+        titles = Object.create(null)
+        docValues = []
+        di = 0
+        phase = "documents"
+      } else if (phase === "documents") {
+        documents = topic.documents || []
+        docCount = documents.length
+        phase = "titles"
+      } else if (phase === "titles") {
+        if (di < docCount) {
+          var doc = documents[di++]
+          if (doc) {
+            var value = { docMd5: doc.docMd5, docTitle: doc.docTitle }
+            docValues.push(value)
+            if (value.docMd5) titles[value.docMd5] = value.docTitle
+          }
+        } else { documents = null; phase = "notes" }
+      } else if (phase === "notes") {
+        notes = topic.notes || []
+        noteCount = notes.length
+        topic = null
+        ni = 0
+        phase = "note"
+      } else if (phase === "note") {
+        if (ni < noteCount) {
+          var note = notes[ni++]
+          pendingNote = noteToObject(note, { flags: flags }, titles)
+          linkedNotes = null
+          linkCount = 0
+          li = 0
+          try {
+            linkedNotes = note.linkedNotes
+            linkCount = linkedNotes ? linkedNotes.length : 0
+          } catch (e) {}
+          phase = "links"
+          return null
         }
-      }
-      if (topic.notes) {
-        for (var n = 0; n < topic.notes.length; n++) {
-          try { objs.push(noteToObject(topic.notes[n], topic, docTitleByMd5)) } catch (e) {}
+        notes = null
+        titles = null
+        di = 0
+        phase = "document"
+      } else if (phase === "links") {
+        if (li < linkCount) {
+          try {
+            var linked = linkedNotes[li++]
+            var id = linked && linked.noteid
+            if (id) pendingNote.links.push(String(id))
+          } catch (e) { li = linkCount }
+        } else {
+          var result = pendingNote
+          pendingNote = null
+          linkedNotes = null
+          phase = "note"
+          return result
         }
+      } else if (phase === "document") {
+        if (di < docValues.length) return documentToObject(docValues[di++])
+        docValues = []
+        phase = "topic"
       }
-      if (topic.documents) {
-        for (var dd = 0; dd < topic.documents.length; dd++) {
-          try { objs.push(documentToObject(topic.documents[dd])) } catch (e) {}
-        }
-      }
-    } catch (e) {}
+      return null
+    }
   }
-  return objs
 }
 
-var _syncing = false
+var _generation = 0
+var _activeSync = null
+var _sceneDisconnected = false
+
+function invalidateTimer(timer) {
+  if (timer) { try { timer.invalidate() } catch (e) {} }
+}
 
 function syncOnce() {
   var s = loadSettings()
   if (!s.enabled || !s.serverUrl || !s.credential || !s.kbName) {
     return Promise.reject("not configured")
   }
-  if (_syncing) return Promise.resolve({ skipped: true })
-  _syncing = true
-  var objects
-  try {
-    objects = collectAllObjects()
-  } catch (e) {
-    _syncing = false
-    return Promise.reject("collect failed: " + e)
-  }
-  if (!objects.length) {
-    _syncing = false
-    return Promise.resolve({ stored: 0, updated: 0, total: 0 })
-  }
+  if (_sceneDisconnected) return Promise.resolve({ cancelled: true })
+  if (_activeSync) return Promise.resolve({ skipped: true })
 
   var credParts = String(s.credential).split(":")
   var headers = {
@@ -347,41 +398,74 @@ function syncOnce() {
     "X-MN4-KB": s.kbName
   }
 
-  var chain = Promise.resolve()
-  var totalStored = 0, totalUpdated = 0, lastErr = null
-  for (var offset = 0; offset < objects.length; offset += BATCH_SIZE) {
-    (function (batch) {
-      chain = chain.then(function () {
-        return dtFetch(s.serverUrl.replace(/\/+$/, "") + "/api/marginnote4/sync", {
-          method: "POST",
-          headers: headers,
-          json: { cursor: "", objects: batch, deleted_ids: [] }
-        }).then(function (res) {
-          totalStored += (res && res.stored) || 0
-          totalUpdated += (res && res.updated) || 0
-        }).catch(function (e) {
-          lastErr = lastErr || String(e)
+  return new Promise(function (resolve, reject) {
+    var job = { generation: _generation, timer: null, cancel: null }
+    var collector = objectCollector(), batch = []
+    var total = 0, stored = 0, updated = 0, lastErr = null
+    _activeSync = job
+    function current() { return _activeSync === job && job.generation === _generation }
+    function finish(error, cancelled) {
+      if (!current()) return
+      invalidateTimer(job.timer)
+      job.timer = null
+      collector = null
+      batch = null
+      _activeSync = null
+      if (cancelled) { resolve({ cancelled: true }); return }
+      var latest = loadSettings()
+      latest.lastError = error ? String(error) : ""
+      if (!error) {
+        latest.lastStored = stored
+        latest.lastUpdated = updated
+        latest.lastSyncAt = new Date().toISOString()
+      }
+      saveSettings(latest)
+      if (error) reject(error)
+      else resolve({ stored: stored, updated: updated, total: total })
+    }
+    job.cancel = function () { finish(null, true) }
+    function schedule(callback) {
+      if (!current()) return
+      try {
+        job.timer = NSTimer.scheduledTimerWithTimeInterval(YIELD_SEC, false, function () {
+          job.timer = null
+          if (!current()) return
+          try { callback() } catch (e) { finish("collect failed: " + e) }
         })
+      } catch (e) { finish("timer failed: " + e) }
+    }
+    function upload() {
+      if (!current()) return
+      var sending = batch
+      batch = []
+      dtFetch(s.serverUrl.replace(/\/+$/, "") + "/api/marginnote4/sync", {
+        method: "POST", headers: headers,
+        json: { cursor: "", objects: sending, deleted_ids: [] }
+      }).then(function (res) {
+        if (!current()) return
+        stored += (res && res.stored) || 0
+        updated += (res && res.updated) || 0
+        schedule(collect)
+      }, function (e) {
+        if (!current()) return
+        lastErr = lastErr || String(e)
+        schedule(collect)
       })
-    })(objects.slice(offset, offset + BATCH_SIZE))
-  }
-
-  return chain.then(function () {
-    _syncing = false
-    if (lastErr) return Promise.reject(lastErr)
-    var s2 = loadSettings()
-    s2.lastStored = totalStored
-    s2.lastUpdated = totalUpdated
-    s2.lastSyncAt = new Date().toISOString()
-    s2.lastError = ""
-    saveSettings(s2)
-    return { stored: totalStored, updated: totalUpdated, total: objects.length }
-  }, function (e) {
-    _syncing = false
-    var s3 = loadSettings()
-    s3.lastError = String(e)
-    saveSettings(s3)
-    return Promise.reject(e)
+    }
+    function collect() {
+      var start = Date.now(), steps = 0
+      while (!collector.done && batch.length < BATCH_SIZE) {
+        var object = collector.next()
+        if (object) { batch.push(object); total++ }
+        steps++
+        if (steps >= SLICE_MAX_STEPS || Date.now() - start >= SLICE_BUDGET_MS) break
+      }
+      // Serialization also gets its own run-loop turn.
+      if (batch.length >= BATCH_SIZE || (collector.done && batch.length)) schedule(upload)
+      else if (collector.done) finish(lastErr)
+      else schedule(collect)
+    }
+    schedule(collect)
   })
 }
 
@@ -403,32 +487,43 @@ function heartbeatOnce() {
 // ---------------------------------------------------------------------------
 
 var _timerStop = true
-var _timerLooping = false
-
-function delay(sec) {
-  return new Promise(function (resolve) {
-    NSTimer.scheduledTimerWithTimeInterval(sec, false, resolve)
-  })
-}
-
-function timerLoop() {
-  if (_timerStop) { _timerLooping = false; return }
-  syncOnce().catch(function () {}).then(function () {
-    delay(SYNC_INTERVAL_SEC).then(timerLoop)
-  })
-}
+var _heartbeatTimer = null
+var _scanTimer = null
 
 function startTimer() {
-  if (!_timerStop || _timerLooping) return
+  if (!_timerStop || _sceneDisconnected) return
   _timerStop = false
-  _timerLooping = true
-  syncOnce().catch(function () {}).then(function () {
-    delay(SYNC_INTERVAL_SEC).then(timerLoop)
-  })
+  var generation = _generation
+  function current() { return !_timerStop && generation === _generation }
+  function scheduleHeartbeat() {
+    if (!current()) return
+    _heartbeatTimer = NSTimer.scheduledTimerWithTimeInterval(SYNC_INTERVAL_SEC, false, function () {
+      if (!current()) return
+      _heartbeatTimer = null
+      heartbeatOnce().then(scheduleHeartbeat, scheduleHeartbeat)
+    })
+  }
+  function scan() {
+    if (!current()) return
+    _scanTimer = null
+    syncOnce().then(scheduleScan, scheduleScan)
+  }
+  function scheduleScan() {
+    if (!current()) return
+    _scanTimer = NSTimer.scheduledTimerWithTimeInterval(FULL_SYNC_INTERVAL_SEC, false, scan)
+  }
+  scheduleHeartbeat()
+  scan()
 }
 
 function stopTimer() {
   _timerStop = true
+  if (_activeSync) _activeSync.cancel()
+  _generation++
+  invalidateTimer(_heartbeatTimer)
+  invalidateTimer(_scanTimer)
+  _heartbeatTimer = null
+  _scanTimer = null
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +531,7 @@ function stopTimer() {
 // ---------------------------------------------------------------------------
 
 function configureFlow() {
-  var s = loadSettings()
+  var generation = _generation
   popupInput("DeepTutor Server URL", "服务器地址，例如 http://<你的服务器IP>:8001")
     .then(function (url) {
       if (url === null || !url.trim()) return null
@@ -454,12 +549,15 @@ function configureFlow() {
         })
     })
     .then(function (cfg) {
+      if (generation !== _generation || _sceneDisconnected) return
       if (!cfg) { hud("已取消"); return }
       if (!cfg.credential || cfg.credential.split(":").length < 2) {
         hud("凭据格式不对：需要 device_id:token")
         return
       }
       var s = loadSettings()
+      stopTimer()
+      generation = _generation
       s.serverUrl = cfg.serverUrl
       s.kbName = cfg.kbName
       s.credential = cfg.credential
@@ -467,9 +565,11 @@ function configureFlow() {
       saveSettings(s)
       hud("已保存，测试连接…")
       heartbeatOnce().then(function (res) {
+        if (generation !== _generation || _sceneDisconnected) return
         hud("连接成功 (对象数 " + ((res && res.object_count) || 0) + ")")
         startTimer()
       }).catch(function (e) {
+        if (generation !== _generation || _sceneDisconnected) return
         // 保留配置（不再回滚成未配置），只记录错误；同步会在 scene 连接时自动重试
         var s2 = loadSettings()
         s2.lastError = String(e)
@@ -487,6 +587,7 @@ JSB.newAddon = function () {
   return JSB.defineClass("DeepTutorSync : JSExtension",
     {
       sceneWillConnect: function () {
+        _sceneDisconnected = false
         self.status = false
         try { self.app = Application.sharedInstance() } catch (e) {}
         try { self.studyController = self.app.studyController(self.window) } catch (e) {}
@@ -495,6 +596,7 @@ JSB.newAddon = function () {
       },
 
       sceneDidDisconnect: function () {
+        _sceneDisconnected = true
         stopTimer()
       },
 
@@ -511,6 +613,7 @@ JSB.newAddon = function () {
       },
 
       onToggle: function () {
+        var generation = _generation
         var s = loadSettings()
         var statusLine = s.enabled
           ? ("已配置: " + s.serverUrl + " / " + s.kbName
@@ -520,14 +623,18 @@ JSB.newAddon = function () {
         popupButtons("DeepTutor Sync", statusLine,
           ["Configure / 配置", "Sync Now / 立即同步", "Disable / 停用", "Reset / 重置"])
           .then(function (idx) {
+            if (generation !== _generation || _sceneDisconnected) return
             if (idx === 0) { configureFlow() }
             else if (idx === 1) {
               var s2 = loadSettings()
               if (!s2.enabled) { hud("尚未配置，请先 Configure"); return }
               hud("同步中…")
               syncOnce().then(function (r) {
+                if (generation !== _generation || r.cancelled) return
+                if (r.skipped) { hud("同步已在进行中"); return }
                 hud("同步完成 +" + r.stored + " ~" + r.updated + " / " + r.total)
               }).catch(function (e) {
+                if (generation !== _generation) return
                 hud("同步失败: " + e)
               })
             }
@@ -541,6 +648,7 @@ JSB.newAddon = function () {
             else if (idx === 3) {
               popupButtons("确认重置？", "将清空全部配置", ["确认重置"])
                 .then(function (c) {
+                  if (generation !== _generation || _sceneDisconnected) return
                   if (c === 0) {
                     saveSettings(defaultSettings())
                     stopTimer()

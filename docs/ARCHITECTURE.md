@@ -14,7 +14,7 @@
 | Network | `dtFetch`：NSURLConnection 桥接的 Promise 化请求 |
 | Dialogs | UIAlertView 桥接的按钮弹窗 / 文本输入弹窗 |
 | Sync engine | 对象收集（note / card / mindmap_node / document）、批量 POST、心跳 |
-| Timers | NSTimer 驱动的 60 秒循环（单一全局循环，防重入） |
+| Timers | NSTimer 驱动的 60 秒心跳与 15 分钟扫描调度，分片让出、防重入 |
 | Configure flow | 三步配置向导 + 连接测试 |
 | Addon entry | 场景生命周期挂钩与工具栏菜单 |
 
@@ -29,9 +29,15 @@
   优先取带 `base64Encoding` 的 NSData，其次识别桥接口业务字段
   （stored / updated / deleted / object_count / device_id），
   对无法识别的形态按失败处理并保留原始信息，绝不静默吞掉。
-- 同步引擎：每次全量收集当前库对象，按 500 条一批增量推送
-  （服务端按 object_id 去重更新）；请求失败只记 lastError，不中断循环。
-- 定时循环：`_syncing` 标志防重入；场景断开即停，重连自动恢复。
+- 同步引擎：逐学习集缓存关系与文档字段，状态机分片转换笔记、链接及文档。
+  每片目标 8 ms，最多 25 步，使用 0.01 秒一次性 NSTimer 让出；单次原生调用无法抢占。
+  收到 500 条立即串行推送，响应后继续收集；不保留整库导出数组。
+  服务端按 object_id 去重更新，客户端仍是全量扫描，不是真正的源端增量查询。
+  请求失败继续剩余批次，最终记录 lastError；收集异常中止并记录，周期仍会重试。
+- 定时循环：首次启用或重连启动扫描，此后扫描完成/失败后等待 15 分钟；
+  独立心跳响应后等待 60 秒。`_activeSync` 防重入，代际编号隔离过期回调。
+  停用、重置、重配和场景断开会取消收集并失效定时器；已发送请求可能完成，
+  但不得更新状态或触发后续批次。重连可以立即启动新代际。
 
 ## 与 DeepTutor MN4 桥的对接协议
 

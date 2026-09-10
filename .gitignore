@@ -7,6 +7,9 @@ node_modules/
 *.sqlite3
 *.log
 
+# 本机性能采样（可能包含设备与进程环境信息）
+sampling/
+
 # 编辑器 / 系统杂项
 .DS_Store
 
